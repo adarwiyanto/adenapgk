@@ -19,7 +19,7 @@ function formatTransactionCode(deviceCode) {
   return `TRX-${date}-${time}-post${deviceCode}`;
 }
 
-function saveSaleLocally({ user, guide, payment, shift, items }) {
+function saveSaleLocally({ user, guide, payment, shift, items, tx_discount_amount = 0, tx_discount_type = 'fixed' }) {
   const device = ensureDeviceCode();
   if (!device.ok) {
     return { ok: false, message: device.message };
@@ -41,20 +41,25 @@ function saveSaleLocally({ user, guide, payment, shift, items }) {
   const insert = db.prepare(`INSERT INTO sales
     (transaction_code, transaction_group_uuid, offline_uuid, product_id, qty, price_each, total,
      payment_method, payment_bank, guide_id, guide_name, created_by, branch_id, sale_source, unit_type, shift_id, sold_at,
+     discount_amount, discount_type, tx_discount_amount, tx_discount_type,
      local_device_id, local_transaction_id, sync_status, cash_received, cash_change)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  const insertLedger = db.prepare(`INSERT INTO stock_ledger
+    (branch_id, product_id, trans_type, ref_table, ref_id, qty_in, qty_out, unit_cost, note, created_by, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+  const productTracksStock = db.prepare('SELECT COALESCE(track_stock, 1) AS track_stock FROM products WHERE id = ? LIMIT 1');
 
   const tx = db.transaction(() => {
     for (const item of items) {
       const itemOfflineUuid = uuidv4();
-      insert.run(
+      const info = insert.run(
         transactionCode,
         transactionGroupUuid,
         itemOfflineUuid,
         item.product_id,
         item.qty,
         item.price_each,
-        item.qty * item.price_each,
+        Number(item.line_total ?? item.total ?? (Number(item.qty || 0) * Number(item.price_each || 0))),
         payment.method,
         payment.bank_name || null,
         guide?.id || null,
@@ -65,12 +70,33 @@ function saveSaleLocally({ user, guide, payment, shift, items }) {
         unitType,
         activeShift.id,
         nowLocal,
+        Number(item.discount_amount || 0),
+        String(item.discount_type || 'fixed') === 'percent' ? 'percent' : 'fixed',
+        Number(tx_discount_amount || 0),
+        String(tx_discount_type || 'fixed') === 'percent' ? 'percent' : 'fixed',
         store.get('deviceId'),
         localTransactionId,
         'pending',
         payment.cash_received ?? null,
         payment.cash_change ?? null
       );
+      const saleLocalId = Number(info.lastInsertRowid || 0);
+      const p = productTracksStock.get(item.product_id);
+      if (saleLocalId > 0 && (!p || Number(p.track_stock ?? 1) === 1)) {
+        insertLedger.run(
+          branchId,
+          item.product_id,
+          'pos_sale_local',
+          'sales',
+          saleLocalId,
+          0,
+          Number(item.qty || 0),
+          null,
+          `Penjualan lokal ${transactionCode}`,
+          user.id,
+          nowLocal
+        );
+      }
     }
   });
 
