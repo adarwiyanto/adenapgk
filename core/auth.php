@@ -8,7 +8,7 @@ const REMEMBER_LOGIN_LIFETIME = 315360000;
 
 function remember_cookie_name(): string {
   $cfg = app_config();
-  return (string)($cfg['security']['remember_cookie_name'] ?? 'ADENAPGK_REMEMBER');
+  return (string)($cfg['security']['remember_cookie_name'] ?? 'HOPE_REMEMBER');
 }
 
 function remember_cookie_secure(): bool {
